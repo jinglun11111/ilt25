@@ -1,7 +1,9 @@
 import sys
-sys.path.append(".")
+import os
+os.chdir(r"C:\Users\dakoo\OpenILT_editable") #idk what to do abt this
+repo_root = r"C:\Users\dakoo\OpenILT_editable"
+sys.path.insert(0, repo_root)
 import time
-
 import cv2
 import numpy as np
 import torch
@@ -12,11 +14,34 @@ import torch.nn.functional as func
 from pycommon.settings import *
 import pycommon.utils as common
 import pycommon.glp as glp
+import pycommon.glp1 as glp1
 import pylitho.simple as lithosim
 # import pylitho.exact as lithosim
-
+from PIL import Image
 import pyilt.initializer as initializer
 import pyilt.evaluation as evaluation
+import matplotlib.pyplot as plt
+
+device = 'cuda' 
+
+#OpenILT test dataset
+# testimg_path = r"C:\Users\dakoo\OpenILT_editable\tmp\MOSAIC_test1.png"
+# target_folder = r"C:\Users\dakoo\claude fcn\lithodata\MetalSet\target"   
+# output_folder = r"C:\Users\dakoo\OpenILT_editable\outputs\Inverse"
+# os.makedirs(output_folder, exist_ok=True)  # make sure folder exists
+
+
+#My dataset
+testimg_path = r"C:\Users\dakoo\claude fcn\lithodata\MetalSet\target\cell0.png" #User input here
+# target_folder = r"C:\Users\dakoo\claude fcn\lithodata\MetalSet\target"   
+output_folder = r"C:\Users\dakoo\OpenILT_editable\outputs\Inverse"
+os.makedirs(output_folder, exist_ok=True)  # make sure folder exists
+
+target_img = cv2.imread(testimg_path, cv2.IMREAD_GRAYSCALE)
+target_img = target_img.astype(np.float32) / 255.0
+
+target = torch.tensor(target_img, dtype=torch.float32, device='cuda')  # or 'cpu'
+params = torch.zeros_like(target, dtype=torch.float32, device='cuda')  # initial mask
 
 class SimpleCfg: 
     def __init__(self, config): 
@@ -38,7 +63,7 @@ class SimpleCfg:
     
     def __getitem__(self, key): 
         return self._config[key]
-
+        
 class SimpleILT: 
     def __init__(self, config=SimpleCfg("./config/simpleilt2048.txt"), lithosim=lithosim.LithoSim("./config/lithosimple.txt"), device=DEVICE, multigpu=False): 
         super(SimpleILT, self).__init__()
@@ -98,63 +123,87 @@ class SimpleILT:
         
         return l2Min, pvbMin, bestParams, bestMask
 
-
-def parallel(): 
-    SCALE = 4
-    l2s = []
-    pvbs = []
-    epes = []
-    shots = []
-    targetsAll = []
-    paramsAll = []
-    cfg   = SimpleCfg("./config/simpleilt512.txt")
-    litho = lithosim.LithoSim("./config/lithosimple.txt")
-    solver = SimpleILT(cfg, litho, multigpu=True)
-    test = evaluation.Basic(litho, 0.5)
-    epeCheck = evaluation.EPEChecker(litho, 0.5)
-    shotCount = evaluation.ShotCounter(litho, 0.5)
-    for idx in range(1, 11): 
-        print(f"[SimpleILT]: Preparing testcase {idx}")
-        design = glp.Design(f"./benchmark/ICCAD2013/M1_test{idx}.glp", down=SCALE)
-        design.center(cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
-        target, params = initializer.PixelInit().run(design, cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
-        targetsAll.append(torch.unsqueeze(target, 0))
-        paramsAll.append(torch.unsqueeze(params, 0))
-    count = torch.cuda.device_count()
-    print(f"Using {count} GPUs")
-    while count > 0 and len(targetsAll) % count != 0: 
-        targetsAll.append(targetsAll[-1])
-        paramsAll.append(paramsAll[-1])
-    print(f"Augmented to {len(targetsAll)} samples. ")
-    targetsAll = torch.cat(targetsAll, 0)
-    paramsAll = torch.cat(paramsAll, 0)
-
-    begin = time.time()
-    l2, pvb, bestParams, bestMask = solver.solve(targetsAll, paramsAll)
-    runtime = time.time() - begin
-
-    for idx in range(1, 11): 
-        mask = bestMask[idx-1]
-        ref = glp.Design(f"./benchmark/ICCAD2013/M1_test{idx}.glp", down=1)
-        ref.center(cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
-        target, params = initializer.PixelInit().run(ref, cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
-        l2, pvb = test.run(mask, target, scale=SCALE)
-        epeIn, epeOut = epeCheck.run(mask, target, scale=SCALE)
-        epe = epeIn + epeOut
-        shot = shotCount.run(mask, shape=(512, 512))
-        cv2.imwrite(f"./tmp/MOSAIC_test{idx}.png", (mask * 255).detach().cpu().numpy())
-
-        print(f"[Testcase {idx}]: L2 {l2:.0f}; PVBand {pvb:.0f}; EPE {epe:.0f}; Shot: {shot:.0f}")
-
-        l2s.append(l2)
-        pvbs.append(pvb)
-        epes.append(epe)
-        shots.append(shot)
+def save_mask_image(mask, output_dir="outputs", filename="mask.png"):
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
     
-    print(f"[Result]: L2 {np.mean(l2s):.0f}; PVBand {np.mean(pvbs):.0f}; EPE {np.mean(epes):.0f}; Shot {np.mean(shots):.0f}; SolveTime {runtime:.2f}s")
+    # Full path for the file
+    filepath = os.path.join(output_dir, filename)
+    
+    # Save the mask using matplotlib
+    plt.figure(figsize=(6,6))
+    plt.imshow(mask, cmap='gray')
+    plt.axis('off')
+    plt.savefig(filepath, bbox_inches='tight', pad_inches=0)
+    plt.close()  # Close the figure to free memory
+    
+    return filepath
 
 
-def serial(): 
+#For non-ILT datasets.
+def serial0(img_pth, output_folder="outputs"): 
+    SCALE = 1
+    l2s, pvbs, epes, shots, runtimes = [], [], [], [], []
+
+    # Ensure output folder exists
+    os.makedirs(output_folder, exist_ok=True)
+
+    cfg   = SimpleCfg("./config/simpleilt2048.txt")
+    litho = lithosim.LithoSim("./config/lithosimple.txt")
+    solver = SimpleILT(cfg, litho)
+
+    # --- Design and initialization ---
+    design = glp1.Design(img_pth, down=SCALE)
+    design.center(cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
+    target, params = initializer.PixelInit().run(design, cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
+    
+    # --- Solve ILT ---
+    begin = time.time()
+    l2, pvb, bestParams, bestMask = solver.solve(target, params, curv=None)
+    runtime = time.time() - begin
+    
+    # --- Evaluation ---
+    ref = glp1.Design(testimg_path, down=1)
+    ref.center(cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
+    target, params = initializer.PixelInit().run(ref, cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
+    l2, pvb, epe, shot = evaluation.evaluate(bestMask, target, litho, scale=SCALE, shots=True)
+
+    # --- Save best mask as matplotlib image ---
+    mask_np = (bestMask.detach().cpu().numpy() * 255).astype(np.uint8)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    unique_filename = f"cell_{timestamp}.png"
+    output_path = os.path.join(output_folder, unique_filename)
+
+    plt.figure(figsize=(6,6))
+    plt.imshow(mask_np, cmap='gray')
+    plt.axis('off')
+    plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+    # print(f"[Cell0]: L2 {l2:.0f}; PVBand {pvb:.0f}; EPE {epe:.0f}; Shot: {shot:.0f}; SolveTime: {runtime:.2f}s")
+
+
+    # --- Show the best mask using matplotlib ---
+    plt.figure(figsize=(6,6))
+    plt.imshow(bestMask.detach().cpu().numpy(), cmap='gray')
+    plt.title("Inverse Mask (Best Result)")
+    plt.axis('off')
+    plt.show()
+
+    # --- Store metrics ---
+    l2s.append(l2)
+    pvbs.append(pvb)
+    epes.append(epe)
+    shots.append(shot)
+    runtimes.append(runtime)
+
+    print(f"[Result]: L2 {np.mean(l2s):.0f}; PVBand {np.mean(pvbs):.0f}; EPE {np.mean(epes):.1f}; Shot {np.mean(shots):.1f}; SolveTime {np.mean(runtimes):.2f}s")
+    
+    # Return path so the agent can access the image
+    return output_path
+
+
+def serial1(img_pth): 
     SCALE = 1
     l2s = []
     pvbs = []
@@ -163,33 +212,35 @@ def serial():
     runtimes = []
     cfg   = SimpleCfg("./config/simpleilt2048.txt")
     litho = lithosim.LithoSim("./config/lithosimple.txt")
+
     solver = SimpleILT(cfg, litho)
-    for idx in range(1, 11): 
-        design = glp.Design(f"./benchmark/ICCAD2013/M1_test{idx}.glp", down=SCALE)
-        design.center(cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
-        target, params = initializer.PixelInit().run(design, cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
-        
-        begin = time.time()
-        l2, pvb, bestParams, bestMask = solver.solve(target, params, curv=None)
-        runtime = time.time() - begin
-        
-        ref = glp.Design(f"./benchmark/ICCAD2013/M1_test{idx}.glp", down=1)
-        ref.center(cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
-        target, params = initializer.PixelInit().run(ref, cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
-        l2, pvb, epe, shot = evaluation.evaluate(bestMask, target, litho, scale=SCALE, shots=True)
-        cv2.imwrite(f"./tmp/MOSAIC_test{idx}.png", (bestMask * 255).detach().cpu().numpy())
 
-        print(f"[Testcase {idx}]: L2 {l2:.0f}; PVBand {pvb:.0f}; EPE {epe:.0f}; Shot: {shot:.0f}; SolveTime: {runtime:.2f}s")
-
-        l2s.append(l2)
-        pvbs.append(pvb)
-        epes.append(epe)
-        shots.append(shot)
-        runtimes.append(runtime)
+    design = glp1.Design(img_pth, down=SCALE)
+    design.center(cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
+    target, params = initializer.PixelInit().run(design, cfg["TileSizeX"], cfg["TileSizeY"], cfg["OffsetX"], cfg["OffsetY"])
     
+    begin = time.time()
+    l2, pvb, bestParams, bestMask = solver.solve(target, params, curv=None)
+    runtime = time.time() - begin
+    
+    ref = glp1.Design(testimg_path, down=1)
+    ref.center(cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
+    target, params = initializer.PixelInit().run(ref, cfg["TileSizeX"]*SCALE, cfg["TileSizeY"]*SCALE, cfg["OffsetX"]*SCALE, cfg["OffsetY"]*SCALE)
+    l2, pvb, epe, shot = evaluation.evaluate(bestMask, target, litho, scale=SCALE, shots=True)
+
+    # --- Show the best mask using matplotlib ---
+    plt.figure(figsize=(6,6))
+    plt.imshow(bestMask.detach().cpu().numpy(), cmap='gray')
+    plt.title("Inverse Mask (Best Result)")
+    plt.axis('off')
+    plt.show()
+
+    l2s.append(l2)
+    pvbs.append(pvb)
+    epes.append(epe)
+    shots.append(shot)
+    runtimes.append(runtime)
+
     print(f"[Result]: L2 {np.mean(l2s):.0f}; PVBand {np.mean(pvbs):.0f}; EPE {np.mean(epes):.1f}; Shot {np.mean(shots):.1f}; SolveTime {np.mean(runtimes):.2f}s")
 
 
-if __name__ == "__main__": 
-    serial()
-    # parallel()
